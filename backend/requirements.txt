@@ -1,0 +1,16 @@
+fastapi==0.109.0
+uvicorn==0.27.0
+sqlalchemy==2.0.25
+chromadb==0.4.22
+sentence-transformers==2.3.1
+requests
+pypdf==4.0.1
+python-docx==1.1.0
+beautifulsoup4==4.12.3
+python-multipart==0.0.6
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+pytesseract==0.3.10
+pdf2image==1.17.0
+Pillow==10.2.0
