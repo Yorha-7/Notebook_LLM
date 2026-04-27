@@ -47,11 +47,10 @@ export interface QuizQuestion {
 
 export interface TheoryQuestion {
   question: string;
-  model_answer: string;
-  key_points: string[];
-  marks_breakdown: Record<string, number>;
+  solution: string;
   marks: number;
   question_number: number;
+  diagram?: string;  // Mermaid diagram code for visualizations
 }
 
 export interface QuizState {

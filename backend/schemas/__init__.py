@@ -93,9 +93,8 @@ class TheoryQuestion(BaseModel):
     model_config = {"protected_namespaces": ("pydantic_",)}
     
     question: str
-    model_answer: str
-    key_points: List[str]
-    marks_breakdown: dict
+    solution: str
+    diagram: Optional[str] = None
     marks: int = 5
     question_number: int = 1
 

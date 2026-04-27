@@ -628,54 +628,32 @@ async def generate_theory_test(notebook_id: str, request: TheoryTestRequest):
     except Exception as e:
         logger.warning(f"Research failed (continuing without): {e}")
         research_context = ""
+     
+    # Build simplified prompt - avoid triple quotes with braces
+    source_excerpt = combined_text[:1200] if combined_text else ""
+    research_topics = research_context[:500] if research_context else "None"
     
-    # Step 5: Build prompt
-    prompt = f"""Generate a university exam paper with {request.num_questions} questions from the content below.
-
-# Step 5: Extract KEY TOPICS from source content first (for forcing real content)
-    # Get first 1500 chars of actual content as "known topics"
-    source_excerpt = combined_text[:1500] if combined_text else ""
-    
-    # Also add research topics if available
-    research_topics = ""
-    if research_context:
-        # Extract just the first 500 chars from research
-        research_topics = research_context[:500]
-    
-    # Build prompt WITHOUT any examples - just format description
-    prompt = f"""TASK: Generate exactly {request.num_questions} university exam questions based on the SOURCE CONTENT below.
-
-OUTPUT FORMAT (pure JSON, NO examples - do not copy any template text):
-{{
-  "questions": [
-    {{
-      "question_number": 1,
-      "question": "ACTUAL question about a real concept from the content",
-      "marks": 1,
-      "model_answer": "Actual answer based on source",
-      "key_points": ["real point 1"],
-      "marks_breakdown": {{"accuracy": 1}}
-    }}
-  ],
-  "total_marks": {request.num_questions * 5},
-  "duration_minutes": {request.duration_minutes}
-}}
-
-CONSTRAINTS (IMPORTANT - follow these strictly):
-- NEVER use "[topic]" or "[concept]" or placeholder text
-- NEVER copy the format examples above - generate REAL new questions
-- Questions MUST be about actual concepts from the SOURCE CONTENT section
-- If content is insufficient, set questions to empty array
-- Use marks distribution: 1-mark, 2-mark, 5-mark, 10-mark questions
-- Return ONLY valid JSON, no markdown, no explanations
-
-SOURCE CONTENT (these are REAL topics you MUST use):
-{source_excerpt[:1200]}
-
-WEB RESEARCH (additional context):
-{research_topics if research_topics else "No additional research - use source content only"}
-
-Return ONLY the JSON object with your generated questions."""
+    prompt = (
+        f"TASK: Generate {request.num_questions} exam questions from the SOURCE CONTENT below.\n\n"
+        + "OUTPUT: Return ONLY valid JSON with this structure:\n"
+        + '{"questions": [{"question": "...", "solution": "...", "marks": 1, "diagram": "mermaid_code or null"}]}\n\n'
+        + "RULES:\n"
+        + "- NEVER use [topic] or [concept] - use REAL content from sources below\n"
+        + "- Questions MUST be about actual concepts in the Source Content\n"
+        + "- Solution CAN include LaTeX math using $...$ or $$...$$ for equations\n"
+        + "- If a diagram helps explain, include Mermaid code in \"diagram\" field\n"
+        + "- If no diagram needed, set diagram to null\n\n"
+        + "Mermaid examples:\n"
+        + "- Flowchart: graph TD; A-->B; B-->C;\n"
+        + "- Sequence: sequenceDiagram; A->>B; B->>A;\n"
+        + "- Class: classDiagram; class Animal { +name }\n\n"
+        + "LaTeX examples:\n"
+        + "- Inline: $E = mc^2$\n"
+        + "- Block: $$积分公式 = \\int_0^1 f(x)dx$$\n\n"
+        + "SOURCE CONTENT:\n" + source_excerpt + "\n\n"
+        + "WEB RESEARCH:\n" + research_topics + "\n\n"
+        + "Return ONLY the JSON."
+    )
 
     # Step 6: Call LLM (with debug logging)
     llm_response = None
@@ -814,35 +792,31 @@ Return ONLY the JSON object with your generated questions."""
             placeholder_patterns = ['[concept]', '[topic]', '[formula]', '[example]', '[define]']
             is_placeholder = any(pattern in question_text.lower() for pattern in placeholder_patterns)
             
-            # Accept only questions with REAL content (more than 15 chars, no brackets)
+# Accept only questions with REAL content (more than 15 chars, no brackets)
             if question_text and len(question_text.strip()) > 15 and not is_placeholder and '[' not in question_text:
-                # Handle multiple possible field names
-                answer = (
+                # Handle multiple possible field names - rename to solution
+                solution = (
+                    q.get('solution') or 
                     q.get('model_answer') or 
                     q.get('ideal_answer') or 
                     q.get('answer') or 
                     q.get('model answer') or
-                    'See study materials for answer.'
+                    'See study materials for solution.'
                 )
-                # Ensure we have key_points
-                key_points = q.get('key_points', [])
-                if isinstance(key_points, str):
-                    key_points = [key_points]
-                elif not isinstance(key_points, list):
-                    key_points = []
+                # Get diagram if present
+                diagram = q.get('diagram')
                 
-                # Only accept if answer is also real (not empty placeholder)
-                if answer and len(answer) > 10 and '[' not in answer:
+                # Only accept if solution is also real (not empty placeholder)
+                if solution and len(solution) > 10 and '[' not in solution:
                     processed_questions.append({
                         'question': question_text,
-                        'model_answer': answer,
-                        'key_points': key_points,
-                        'marks_breakdown': q.get('marks_breakdown', {}),
+                        'solution': solution,
+                        'diagram': diagram if diagram and len(str(diagram)) > 5 else None,
                         'marks': q.get('marks', 5),
                         'question_number': q.get('question_number', i + 1)
                     })
     
-processed_questions = processed_questions[:request.num_questions]
+    processed_questions = processed_questions[:request.num_questions]
     
     logger.info(f"Processed {len(processed_questions)} VALID questions (rejected {len(questions) - len(processed_questions)} placeholders)")
     
@@ -851,7 +825,7 @@ processed_questions = processed_questions[:request.num_questions]
         return {
             "success": False,
             "error": "PLACEHOLDER_ONLY",
-            "message": "AI returned template/placeholder text instead of real questions. Try with more detailed source material.",
+            "message": "AI returned template/placeholder text instead of real questions.",
             "debug": {"raw_response": llm_response[:1000], "questions_before_filter": len(questions)},
             "questions": []
         }
@@ -927,16 +901,7 @@ async def generate_focused_flashcards(notebook_id: str):
             combined_text += txt_parser.parse_txt(source.file_path) + "\n"
     
     weak_topics_str = ", ".join(weak_topics[:3])
-    prompt = f"""Create 10 flashcards focused on these weak areas: {weak_topics_str}
-
-From the content below, create flashcards that test understanding of these specific topics.
-Return JSON array format:
-[{{"question": "?", "answer": "?"}}]
-
-Content:
-{combined_text[:6000]}
-
-Focus on: {weak_topics_str}"""
+    prompt = f"Create 10 flashcards focused on these weak areas: {weak_topics_str}\n\nFrom the content below, create flashcards that test understanding of these specific topics.\nReturn JSON array format:\n[{{'question': '?', 'answer': '?'}}]\n\nContent:\n{combined_text[:6000]}\n\nFocus on: {weak_topics_str}"
     
     response = llm.generate_response(prompt, llm.get_models_for_task("flashcards"))
     
