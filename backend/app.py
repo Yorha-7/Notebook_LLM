@@ -632,75 +632,57 @@ async def generate_theory_test(notebook_id: str, request: TheoryTestRequest):
     # Step 5: Build prompt
     prompt = f"""Generate a university exam paper with {request.num_questions} questions from the content below.
 
-EXAM PAPER FORMAT:
-- Total marks: approximately {request.num_questions * 5} marks
-- Questions should be from actual university exam patterns
-- Vary marks: 1 mark (short answer), 2 marks (brief), 5 marks (detailed), 10 marks (long answer)
+# Step 5: Extract KEY TOPICS from source content first (for forcing real content)
+    # Get first 1500 chars of actual content as "known topics"
+    source_excerpt = combined_text[:1500] if combined_text else ""
+    
+    # Also add research topics if available
+    research_topics = ""
+    if research_context:
+        # Extract just the first 500 chars from research
+        research_topics = research_context[:500]
+    
+    # Build prompt WITHOUT any examples - just format description
+    prompt = f"""TASK: Generate exactly {request.num_questions} university exam questions based on the SOURCE CONTENT below.
 
-QUESTION DISTRIBUTION (example):
-- 2-3 questions of 1 mark each (short definitions)
-- 2-3 questions of 2 marks each (brief explanations)  
-- 3-5 questions of 5 marks each (detailed answers)
-- 1-2 questions of 10 marks (comprehensive/derivation)
-
-Each question MUST include:
-1. question_number: sequential number
-2. question: the exam question text
-3. marks: weight (1, 2, 5, or 10)
-4. model_answer: detailed ideal answer
-5. key_points: marking scheme points (number of points should match marks)
-6. marks_breakdown: how marks are distributed
-
-Return ONLY a valid JSON object:
+OUTPUT FORMAT (pure JSON, NO examples - do not copy any template text):
 {{
   "questions": [
     {{
       "question_number": 1,
-      "question": "Define [concept]. (1 mark)",
+      "question": "ACTUAL question about a real concept from the content",
       "marks": 1,
-      "model_answer": "A definition...",
-      "key_points": ["Key point 1"],
-      "marks_breakdown": {{"definition": 1}}
-    }},
-    {{
-      "question_number": 2,
-      "question": "Explain [topic] with example. (2 marks)",
-      "marks": 2,
-      "model_answer": "Detailed explanation...",
-      "key_points": ["Point 1", "Point 2"],
-      "marks_breakdown": {{"explanation": 1, "example": 1}}
-    }},
-    {{
-      "question_number": 3,
-      "question": "Derive [formula] and explain. (5 marks)",
-      "marks": 5,
-      "model_answer": "Step by step derivation...",
-      "key_points": ["Step 1", "Step 2", "Step 3"],
-      "marks_breakdown": {{"derivation": 2, "explanation": 3}}
+      "model_answer": "Actual answer based on source",
+      "key_points": ["real point 1"],
+      "marks_breakdown": {{"accuracy": 1}}
     }}
   ],
   "total_marks": {request.num_questions * 5},
-  "duration_minutes": {request.duration_minutes},
-  "subject": "University Subject"
+  "duration_minutes": {request.duration_minutes}
 }}
 
-IMPORTANT:
-- Use content from the source material AND additional research below
-- Return ONLY valid JSON, no markdown, no code blocks, no explanations
+CONSTRAINTS (IMPORTANT - follow these strictly):
+- NEVER use "[topic]" or "[concept]" or placeholder text
+- NEVER copy the format examples above - generate REAL new questions
+- Questions MUST be about actual concepts from the SOURCE CONTENT section
+- If content is insufficient, set questions to empty array
+- Use marks distribution: 1-mark, 2-mark, 5-mark, 10-mark questions
+- Return ONLY valid JSON, no markdown, no explanations
 
-SOURCE CONTENT:
-{combined_text[:6000]}
+SOURCE CONTENT (these are REAL topics you MUST use):
+{source_excerpt[:1200]}
 
-ADDITIONAL RESEARCH (use this for context):
-{research_context if research_context else "No additional research available. Generate questions based on the source content."}
+WEB RESEARCH (additional context):
+{research_topics if research_topics else "No additional research - use source content only"}
 
-Return ONLY the JSON object."""
+Return ONLY the JSON object with your generated questions."""
 
     # Step 6: Call LLM (with debug logging)
     llm_response = None
     try:
         model = llm.get_models_for_task("theory_test")
         logger.info(f"Calling LLM with model: {model} for theory test")
+        logger.info(f"Source excerpt (first 200 chars): {source_excerpt[:200]}")
         logger.info(f"Prompt length: {len(prompt)} chars, Research context: {len(research_context)} chars")
         llm_response = llm.generate_response(prompt, model)
         
@@ -828,15 +810,19 @@ Return ONLY the JSON object."""
     for i, q in enumerate(questions):
         if isinstance(q, dict):
             question_text = q.get('question', '')
-            # Accept questions with meaningful text (not placeholders like "[question]")
-            if question_text and len(question_text.strip()) > 10:
+            # REJECT placeholder/template questions - must have REAL content
+            placeholder_patterns = ['[concept]', '[topic]', '[formula]', '[example]', '[define]']
+            is_placeholder = any(pattern in question_text.lower() for pattern in placeholder_patterns)
+            
+            # Accept only questions with REAL content (more than 15 chars, no brackets)
+            if question_text and len(question_text.strip()) > 15 and not is_placeholder and '[' not in question_text:
                 # Handle multiple possible field names
                 answer = (
                     q.get('model_answer') or 
                     q.get('ideal_answer') or 
                     q.get('answer') or 
                     q.get('model answer') or
-                    'Study the source material to answer this question.'
+                    'See study materials for answer.'
                 )
                 # Ensure we have key_points
                 key_points = q.get('key_points', [])
@@ -845,26 +831,28 @@ Return ONLY the JSON object."""
                 elif not isinstance(key_points, list):
                     key_points = []
                 
-                processed_questions.append({
-                    'question': question_text,
-                    'model_answer': answer,
-                    'key_points': key_points,
-                    'marks_breakdown': q.get('marks_breakdown', {}),
-                    'marks': q.get('marks', 5),
-                    'question_number': q.get('question_number', i + 1)
-                })
+                # Only accept if answer is also real (not empty placeholder)
+                if answer and len(answer) > 10 and '[' not in answer:
+                    processed_questions.append({
+                        'question': question_text,
+                        'model_answer': answer,
+                        'key_points': key_points,
+                        'marks_breakdown': q.get('marks_breakdown', {}),
+                        'marks': q.get('marks', 5),
+                        'question_number': q.get('question_number', i + 1)
+                    })
     
-    processed_questions = processed_questions[:request.num_questions]
+processed_questions = processed_questions[:request.num_questions]
     
-    logger.info(f"Processed {len(processed_questions)} valid questions from {len(questions)} raw")
+    logger.info(f"Processed {len(processed_questions)} VALID questions (rejected {len(questions) - len(processed_questions)} placeholders)")
     
     if not processed_questions:
-        logger.error(f"No valid questions after processing. Raw: {llm_response[:800]}")
+        logger.error(f"No valid questions after filtering placeholders. Raw: {llm_response[:800]}")
         return {
             "success": False,
-            "error": "NO_VALID_QUESTIONS",
-            "message": "Could not generate valid theory questions from content. Try adding more source material or try again.",
-            "debug": {"raw_response": llm_response[:1000], "questions_found": len(questions)},
+            "error": "PLACEHOLDER_ONLY",
+            "message": "AI returned template/placeholder text instead of real questions. Try with more detailed source material.",
+            "debug": {"raw_response": llm_response[:1000], "questions_before_filter": len(questions)},
             "questions": []
         }
     

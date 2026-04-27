@@ -1,3 +1,7 @@
+# Note 
+
+this workspace was mamded to test the abilities of opencode, thats all its purpose was to.
+
 # NotebookLLM
 
 Local AI Research Assistant - Replica of Google NotebookLM, running entirely offline.
